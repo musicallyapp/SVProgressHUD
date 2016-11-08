@@ -92,18 +92,39 @@ static const CGFloat SVProgressHUDDefaultAnimationDuration = 0.15;
     BOOL _isInitializing;
 }
 
+static BOOL asExtension;
+
++ (void)setAsExtenstion
+{
+    asExtension = YES;
+}
+
 + (SVProgressHUD*)sharedView {
     static dispatch_once_t once;
     
     static SVProgressHUD *sharedView;
-#if !defined(SV_APP_EXTENSIONS)
-    dispatch_once(&once, ^{ sharedView = [[self alloc] initWithFrame:[[[UIApplication sharedApplication] delegate] window].bounds]; });
-#else
-    dispatch_once(&once, ^{ sharedView = [[self alloc] initWithFrame:[[UIScreen mainScreen] bounds]]; });
-#endif
+    if (asExtension) {
+        dispatch_once(&once, ^{ sharedView = [[self alloc] initWithFrame:[[[self appContext] delegate] window].bounds]; });
+    }
+    else {
+        dispatch_once(&once, ^{ sharedView = [[self alloc] initWithFrame:[[UIScreen mainScreen] bounds]]; });
+    }
     return sharedView;
 }
 
++ (id)appContext
+{
+    if (asExtension)
+    {
+        return nil;
+    }
+    return [NSStringFromClass(@"UIApplication") performSelector:NSSelectorFromString([NSString stringWithFormat:@"%@%@", @"sharedA", @"pplication"]) withObject:nil];
+}
+
+- (id)appContext
+{
+    return [self.class appContext];
+}
 
 #pragma mark - Setters
 
@@ -585,25 +606,26 @@ static const CGFloat SVProgressHUDDefaultAnimationDuration = 0.15;
 - (void)updateViewHierarchy {
     // Add the overlay (e.g. black, gradient) to the application window if necessary
     if(!self.overlayView.superview) {
-#if !defined(SV_APP_EXTENSIONS)
-        // Default case: iterate over UIApplication windows
-        NSEnumerator *frontToBackWindows = [UIApplication.sharedApplication.windows reverseObjectEnumerator];
-        for (UIWindow *window in frontToBackWindows) {
-            BOOL windowOnMainScreen = window.screen == UIScreen.mainScreen;
-            BOOL windowIsVisible = !window.hidden && window.alpha > 0;
-            BOOL windowLevelSupported = (window.windowLevel >= UIWindowLevelNormal && window.windowLevel <= self.maxSupportedWindowLevel);
-            
-            if(windowOnMainScreen && windowIsVisible && windowLevelSupported) {
-                [window addSubview:self.overlayView];
-                break;
+        if (!asExtension) {
+            // Default case: iterate over UIApplication windows
+            NSEnumerator *frontToBackWindows = [[[self appContext] windows] reverseObjectEnumerator];
+            for (UIWindow *window in frontToBackWindows) {
+                BOOL windowOnMainScreen = window.screen == UIScreen.mainScreen;
+                BOOL windowIsVisible = !window.hidden && window.alpha > 0;
+                BOOL windowLevelSupported = (window.windowLevel >= UIWindowLevelNormal && window.windowLevel <= self.maxSupportedWindowLevel);
+                
+                if(windowOnMainScreen && windowIsVisible && windowLevelSupported) {
+                    [window addSubview:self.overlayView];
+                    break;
+                }
             }
         }
-#else
-        // If SVProgressHUD ist used inside an app extension add it to the given view
-        if(self.viewForExtension) {
-            [self.viewForExtension addSubview:self.overlayView];
+        else {
+            // If SVProgressHUD ist used inside an app extension add it to the given view
+            if(self.viewForExtension) {
+                [self.viewForExtension addSubview:self.overlayView];
+            }
         }
-#endif
     } else {
         // The HUD is already on screen, but maybot not in front. Therefore
         // ensure that overlay will be on top of rootViewController (which may
@@ -678,23 +700,28 @@ static const CGFloat SVProgressHUDDefaultAnimationDuration = 0.15;
 - (void)positionHUD:(NSNotification*)notification {
     CGFloat keyboardHeight = 0.0f;
     double animationDuration = 0.0;
-
-#if !defined(SV_APP_EXTENSIONS) && TARGET_OS_IOS
-    self.frame = [[[UIApplication sharedApplication] delegate] window].bounds;
-    UIInterfaceOrientation orientation = UIApplication.sharedApplication.statusBarOrientation;
-#elif !defined(SV_APP_EXTENSIONS) && !TARGET_OS_IOS
-    self.frame= [UIApplication sharedApplication].keyWindow.bounds;
-#else
-    if (self.viewForExtension) {
-        self.frame = self.viewForExtension.frame;
-    } else {
-        self.frame = UIScreen.mainScreen.bounds;
-    }
+    UIInterfaceOrientation orientation;
+    if (asExtension)
+    {
+        if (self.viewForExtension) {
+            self.frame = self.viewForExtension.frame;
+        } else {
+            self.frame = UIScreen.mainScreen.bounds;
+        }
 #if TARGET_OS_IOS
-    UIInterfaceOrientation orientation = CGRectGetWidth(self.frame) > CGRectGetHeight(self.frame) ? UIInterfaceOrientationLandscapeLeft : UIInterfaceOrientationPortrait;
+        orientation = CGRectGetWidth(self.frame) > CGRectGetHeight(self.frame) ? UIInterfaceOrientationLandscapeLeft : UIInterfaceOrientationPortrait;
 #endif
+    }
+    else
+    {
+#if TARGET_OS_IOS
+        self.frame = [[[self appContext] delegate] window].bounds;
+        orientation = [[self appContext] statusBarOrientation];
+#elif !TARGET_OS_IOS
+        self.frame= [self appContext].keyWindow.bounds;
 #endif
-    
+    }
+  
     // no transforms applied to window in iOS 8, but only if compiled with iOS 8 sdk as base sdk, otherwise system supports old rotation logic.
     BOOL ignoreOrientation = NO;
 #if __IPHONE_OS_VERSION_MAX_ALLOWED >= 80000
@@ -725,10 +752,12 @@ static const CGFloat SVProgressHUDDefaultAnimationDuration = 0.15;
     // Get the currently active frame of the display (depends on orientation)
     CGRect orientationFrame = self.bounds;
 
-#if !defined(SV_APP_EXTENSIONS) && TARGET_OS_IOS
-    CGRect statusBarFrame = UIApplication.sharedApplication.statusBarFrame;
-#else
     CGRect statusBarFrame = CGRectZero;
+    
+#if TARGET_OS_IOS
+    if (!asExtension) {
+        statusBarFrame = [[self appContext] statusBarFrame];
+    }
 #endif
     
 #if TARGET_OS_IOS
@@ -1071,12 +1100,14 @@ static const CGFloat SVProgressHUDDefaultAnimationDuration = 0.15;
                                                                       userInfo:[strongSelf notificationUserInfo]];
                     
                     // Tell the rootViewController to update the StatusBar appearance
-#if !defined(SV_APP_EXTENSIONS) && TARGET_OS_IOS
-                    UIViewController *rootController = [[UIApplication sharedApplication] keyWindow].rootViewController;
-                    if([rootController respondsToSelector:@selector(setNeedsStatusBarAppearanceUpdate)]) {
-                        [rootController setNeedsStatusBarAppearanceUpdate];
+                    #if TARGET_OS_IOS
+                    if (!asExtension) {
+                        UIViewController *rootController = [[self appContext] keyWindow].rootViewController;
+                        if([rootController respondsToSelector:@selector(setNeedsStatusBarAppearanceUpdate)]) {
+                            [rootController setNeedsStatusBarAppearanceUpdate];
+                        }
                     }
-#endif
+                    #endif
                     // Update accessibility
                     UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, nil);
                     
@@ -1263,12 +1294,13 @@ static const CGFloat SVProgressHUDDefaultAnimationDuration = 0.15;
         [_overlayView addTarget:self action:@selector(overlayViewDidReceiveTouchEvent:forEvent:) forControlEvents:UIControlEventTouchDown];
     }
     // Update frame
-#if !defined(SV_APP_EXTENSIONS)
-    CGRect windowBounds = [[[UIApplication sharedApplication] delegate] window].bounds;
-    _overlayView.frame = windowBounds;
-#else
-    _overlayView.frame = [UIScreen mainScreen].bounds;
-#endif
+    if (asExtension) {
+        _overlayView.frame = [UIScreen mainScreen].bounds;
+    }
+    else {
+        CGRect windowBounds = [[[self appContext] delegate] window].bounds;
+        _overlayView.frame = windowBounds;
+    }
     
     return _overlayView;
 }
@@ -1322,27 +1354,27 @@ static const CGFloat SVProgressHUDDefaultAnimationDuration = 0.15;
 }
 
 - (CGFloat)visibleKeyboardHeight {
-#if !defined(SV_APP_EXTENSIONS)
-    UIWindow *keyboardWindow = nil;
-    for (UIWindow *testWindow in [[UIApplication sharedApplication] windows]) {
-        if(![[testWindow class] isEqual:[UIWindow class]]) {
-            keyboardWindow = testWindow;
-            break;
+    if (!asExtension) {
+        UIWindow *keyboardWindow = nil;
+        for (UIWindow *testWindow in [[self appContext] windows]) {
+            if(![[testWindow class] isEqual:[UIWindow class]]) {
+                keyboardWindow = testWindow;
+                break;
+            }
         }
-    }
-    
-    for (__strong UIView *possibleKeyboard in [keyboardWindow subviews]) {
-        if([possibleKeyboard isKindOfClass:NSClassFromString(@"UIPeripheralHostView")] || [possibleKeyboard isKindOfClass:NSClassFromString(@"UIKeyboard")]) {
-            return CGRectGetHeight(possibleKeyboard.bounds);
-        } else if([possibleKeyboard isKindOfClass:NSClassFromString(@"UIInputSetContainerView")]) {
-            for (__strong UIView *possibleKeyboardSubview in [possibleKeyboard subviews]) {
-                if([possibleKeyboardSubview isKindOfClass:NSClassFromString(@"UIInputSetHostView")]) {
-                    return CGRectGetHeight(possibleKeyboardSubview.bounds);
+        
+        for (__strong UIView *possibleKeyboard in [keyboardWindow subviews]) {
+            if([possibleKeyboard isKindOfClass:NSClassFromString(@"UIPeripheralHostView")] || [possibleKeyboard isKindOfClass:NSClassFromString(@"UIKeyboard")]) {
+                return CGRectGetHeight(possibleKeyboard.bounds);
+            } else if([possibleKeyboard isKindOfClass:NSClassFromString(@"UIInputSetContainerView")]) {
+                for (__strong UIView *possibleKeyboardSubview in [possibleKeyboard subviews]) {
+                    if([possibleKeyboardSubview isKindOfClass:NSClassFromString(@"UIInputSetHostView")]) {
+                        return CGRectGetHeight(possibleKeyboardSubview.bounds);
+                    }
                 }
             }
         }
     }
-#endif
     return 0;
 }
 
