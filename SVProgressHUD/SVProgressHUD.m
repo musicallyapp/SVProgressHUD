@@ -118,7 +118,7 @@ static BOOL asExtension;
     {
         return nil;
     }
-    return [NSStringFromClass(@"UIApplication") performSelector:NSSelectorFromString([NSString stringWithFormat:@"%@%@", @"sharedA", @"pplication"]) withObject:nil];
+    return [NSClassFromString(@"UIApplication") performSelector:NSSelectorFromString([NSString stringWithFormat:@"%@%@", @"sharedA", @"pplication"]) withObject:nil];
 }
 
 - (id)appContext
